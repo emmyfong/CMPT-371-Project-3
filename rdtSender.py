@@ -1,4 +1,4 @@
-# Name: <your full name> (<your student number>), <partner> (<their number>)
+# Name: Alicia Lam (301552532), Emmy Fong (301585818), Truman Ho (301558416)
 """The sending half of the protocol: Go-Back-N and Selective Repeat.
 
 Stop-and-wait is Go-Back-N with a window of one, so build task 1 in a way that

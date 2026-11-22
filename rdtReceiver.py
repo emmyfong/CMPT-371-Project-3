@@ -1,4 +1,4 @@
-# Name: <your full name> (<your student number>), <partner> (<their number>)
+# Name: Alicia Lam (301552532), Emmy Fong (301585818), Truman Ho (301558416)
 """The receiving half of the protocol: Go-Back-N and Selective Repeat.
 
 Go-Back-N keeps a receive window of one and buffers nothing. Selective Repeat

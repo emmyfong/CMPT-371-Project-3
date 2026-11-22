@@ -1,4 +1,4 @@
-# Name: <your full name> (<your student number>), <partner> (<their number>)
+# Name: Alicia Lam (301552532), Emmy Fong (301585818), Truman Ho (301558416)
 """The segment format, the checksum, the sequence space, and the shared buffer.
 
 Both of your programs import this module, which is why the seed lives here: it
@@ -21,7 +21,7 @@ import config
 # Set this to your Canvas group number before you run anything else. It is the
 # seed for every run you report, and channel.py reads it from this file, so the
 # three programs can never disagree about it.
-SEED = 0
+SEED = 15
 
 HEADER = "!IIBxHHH"  # seqNum, ackNum, flags, pad, checksum, rcvWin, length
 HEADER_LEN = struct.calcsize(HEADER)
