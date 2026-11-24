@@ -44,7 +44,21 @@ def checksum(data):
     Running this over a whole datagram exactly as received, checksum field
     included, gives zero if and only if nothing changed in transit.
     """
-    raise NotImplementedError
+
+    if len(data) % 2 == 1: # if odd number of bytes, pad with zero
+        data += b'\x00'
+    total = 0
+    for i in range(0, len(data), 2):
+        word = data[i:i+2] # get 16-bit word
+        total += int.from_bytes(word, byteorder="big")
+        
+        while total > 0xFFFF: # fold whenever there is a carry
+            carry = total >> 16
+            bottom = total & 0xFFFF # the 16-bits not including the carry
+            total = bottom + carry
+
+    checksum = ~total & 0xFFFF
+    return checksum
 
 
 class RDTSegment:
@@ -97,7 +111,17 @@ class RDTSegment:
         a damaged length field is a corruption, and the two are otherwise
         indistinguishable.
         """
-        raise NotImplementedError
+
+        if checksum(data) != 0: # failed checksum
+            return "checksum"
+        
+        flags = data[8] 
+        if (flags >> 2) > 0: # reserved flags 
+            return "flags"
+
+        length = int.from_bytes(data[14:16], "big")
+        if length != len(data) - HEADER_LEN: # bad length field
+            return "length"
 
     @property
     def isAck(self):
@@ -299,7 +323,18 @@ class RdtBuffer:
         Follow putNext: take the Condition, wait_for the state you need, change
         it, notify_all, release.
         """
-        raise NotImplementedError
+        with self.cv:
+            segment = self.cv.wait_for( # block until there is a segment
+                lambda: self.next - self.base > 0 or self.closed,
+                timeout)
+            if not segment or self.closed:
+                return None
+            base_seg = self.slots[self.base % self.size]
+            self.slots[self.base % self.size] = None # remove segment at base 
+            self.base += 1
+            self.cv.notify_all()
+            return base_seg
+
 
     def putSeqNum(self, seg, index):
         """Place a segment at a logical index that may be ahead of `base`.
