@@ -44,7 +44,21 @@ def checksum(data):
     Running this over a whole datagram exactly as received, checksum field
     included, gives zero if and only if nothing changed in transit.
     """
-    raise NotImplementedError
+
+    if len(data) % 2 == 1: # if odd number of bytes, pad with zero
+        data += b'\x00'
+    total = 0
+    for i in range(0, len(data), 2):
+        word = data[i:i+2] # get 16-bit word
+        total += int.from_bytes(word, byteorder="big")
+        
+        while total > 0xFFFF: # fold whenever there is a carry
+            carry = total >> 16
+            bottom = total & 0xFFFF # the 16-bits not including the carry
+            total = bottom + carry
+
+    checksum = ~total & 0xFFFF
+    return checksum
 
 
 class RDTSegment:
@@ -97,7 +111,17 @@ class RDTSegment:
         a damaged length field is a corruption, and the two are otherwise
         indistinguishable.
         """
-        raise NotImplementedError
+
+        if checksum(data) != 0: # failed checksum
+            return "checksum"
+        
+        flags = data[8] 
+        if (flags >> 2) > 0: # reserved flags 
+            return "flags"
+
+        length = int.from_bytes(data[14:16], "big")
+        if length != len(data) - HEADER_LEN: # bad length field
+            return "length"
 
     @property
     def isAck(self):
@@ -140,7 +164,8 @@ def inWindow(x, base, n):
     space. Comparing sequence numbers with < instead gives the right answer
     only while the space is large enough never to wrap.
     """
-    raise NotImplementedError
+    return (x - base) % space() < n
+    # raise NotImplementedError
 
 
 def windowLimit(protocol):
@@ -299,7 +324,18 @@ class RdtBuffer:
         Follow putNext: take the Condition, wait_for the state you need, change
         it, notify_all, release.
         """
-        raise NotImplementedError
+        with self.cv:
+            segment = self.cv.wait_for( # block until there is a segment
+                lambda: self.next - self.base > 0 or self.closed,
+                timeout)
+            if not segment or self.closed:
+                return None
+            base_seg = self.slots[self.base % self.size]
+            self.slots[self.base % self.size] = None # remove segment at base 
+            self.base += 1
+            self.cv.notify_all()
+            return base_seg
+
 
     def putSeqNum(self, seg, index):
         """Place a segment at a logical index that may be ahead of `base`.
@@ -320,7 +356,18 @@ class RdtBuffer:
         rdtReceiver.py. Placing a segment at the wrong index is therefore not a
         local mistake: it delivers the file in the wrong order.
         """
-        raise NotImplementedError
+        with self.cv:
+            if not (self.base <= index < self.base + self.size): # Return False if the index is outside [base, base + size)
+                return False
+            if self.slots[index % self.size] is not None: # Return False if that slot is already occupied
+                return False
+            
+            self.slots[index % self.size] = seg # Place segment
+
+            self.next = max(self.next, index + 1) # `next` has to end up one past the highest index placed
+            self.cv.notify_all()
+            return True
+        #raise NotImplementedError
 
     def markAcked(self, index):
         """Flag the segment at `index`, then slide base past a run of acked slots.
@@ -341,7 +388,23 @@ class RdtBuffer:
         which is why one call can free several slots and wake an application
         thread that has been blocked in putNext.
         """
-        raise NotImplementedError
+        with self.cv:
+            seg = self.slots[index % self.size]
+
+            if not (self.base <= index < self.next) or seg is None: # Return False if the index is not in [base, next) or the slot is empty.
+                return False
+            
+            seg.acked = True # Mark ACKed
+
+            while self.base < self.next: # slide base past a run of acked slots
+                current = self.slots[self.base % self.size]
+                if current is None or not current.acked:
+                    break
+                self.base += 1
+
+            self.cv.notify_all()
+            return True
+        # raise NotImplementedError
 
 
 # ============================================================================

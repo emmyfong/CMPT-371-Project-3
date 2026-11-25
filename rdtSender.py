@@ -62,7 +62,15 @@ class Sender:
         Cancelling a timer is then an assignment. The value is config.RTO_INIT
         and it does not change; measuring the path is the bonus.
         """
-        raise NotImplementedError
+        self.sock = sock
+        self.channelAddr = channelAddr
+        self.protocol = protocol
+
+        self.buffer = RdtBuffer(config.WINDOW)
+        self.deadline = None
+        self.thread = None
+        self.lock = threading.Lock()
+        #raise NotImplementedError
 
     def start(self):
         """Start the network thread.
@@ -79,7 +87,56 @@ class Sender:
 
         Do the socket call outside the buffer's Condition, never inside it.
         """
-        raise NotImplementedError
+        def network_thread():
+            while True:
+                try:
+                    data, addr = self.sock.recvfrom(65535)
+                except socket.timeout:
+                    data = None
+                except OSError:
+                    print("Idle timeout")
+                    break
+
+                if data is not None:
+                    invalid_reason = RDTSegment.validate(data)
+                    if invalid_reason == "checksum":
+                        segment.traceCorrupt(int.from_bytes(data[4:8], "big"))
+                    elif invalid_reason is not None:
+                        segment.traceDrop(int.from_bytes(data[4:8], "big"), invalid_reason)
+                    else:
+                        seg = RDTSegment.unpack(data)
+
+                        if seg.isAck:
+                            base, nxt = self.buffer.base, self.buffer.next
+                            # If n = ackNum is within [base, next), markAcked base through ackNum
+                            n = base + (seg.ackNum - base) % segment.space() # convert numAck to logical
+                            if segment.inWindow(n, base, nxt-base):
+                                with self.lock:
+                                    for i in range(base, n+1):
+                                        self.buffer.markAcked(i)
+
+                                    if self.buffer.outstanding(): # Restart timer when base advances and something still outstanding
+                                        self.deadline = time.monotonic() + config.RTO_INIT
+                                    else: # Stop timer if window empty
+                                        self.deadline = None
+                
+                with self.lock:
+                    deadline = self.deadline
+                if deadline is not None and time.monotonic() >= deadline: # if time expired, retransmit [base, next)
+                    base, nxt = self.buffer.base, self.buffer.next
+                    if base < nxt:
+                        segment.traceTimeout(self.buffer.get(base).seqNum, base, nxt)
+                        for i in range(base, nxt):
+                            self.sock.sendto(self.buffer.get(i).pack(), self.channelAddr) # retransmit
+                            segment.traceSend(self.buffer.get(i), base, nxt, config.WINDOW)
+                        with self.lock:
+                            self.deadline = time.monotonic() + config.RTO_INIT
+
+
+        self.sock.settimeout(0.005)
+        self.thread = threading.Thread(target=network_thread)
+        self.thread.start()
+        #raise NotImplementedError
 
     def send(self, payload):
         """Hand one segment's worth of data to the protocol.
@@ -92,7 +149,26 @@ class Sender:
         reopen it, because there is nothing left to acknowledge. After
         config.PERSIST seconds, transmit anyway.
         """
-        raise NotImplementedError
+
+        seg = RDTSegment(
+            seqNum=segment.mask(self.buffer.next),
+            payload=payload
+        )
+
+        accepted = self.buffer.putNext(seg)
+        if not accepted:
+            return False
+
+        self.sock.sendto(seg.pack(), self.channelAddr)
+        segment.traceSend(seg, self.buffer.base, self.buffer.next, config.WINDOW)
+
+        with self.lock:
+            if self.deadline is None:
+                self.deadline = time.monotonic() + config.RTO_INIT
+
+        return True
+        
+        #raise NotImplementedError
 
     def close(self):
         """Wait for every segment to be acknowledged, then take the connection
