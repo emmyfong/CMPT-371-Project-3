@@ -77,7 +77,7 @@ class Receiver:
         def network_thread():
             while True:
                 try:
-                    data, addr = self.sock.recvfrom(4096)
+                    data, addr = self.sock.recvfrom(65535)
                 except socket.timeout:
                     continue
                 except OSError:
@@ -91,19 +91,22 @@ class Receiver:
                     segment.traceDrop(int.from_bytes(data[0:4], "big"), invalid_reason)
                 else: # validated
                     seg = RDTSegment.unpack(data)
-                    # if seqNum == firstEmpty, then place seg into buffer at seqNum
-                    expected = self.buffer.firstEmpty()
-                    if seg.seqNum == expected  % (2 ** config.SEQ_BITS):
-                        self.buffer.putSeqNum(seg, expected)
+                    # A valid segment with seqNum == rcvBase: deliver the payload, 
+                    # advance rcvBase,
+                    rcvBase = self.buffer.firstEmpty()
+                    if seg.seqNum == segment.mask(rcvBase) and self.buffer.putSeqNum(seg, rcvBase):
+                        rcvBase += 1
                     else:
-                        segment.traceDrop(seg.seqNum,"") # Trace duplicate
-                    # and send ACK.
-                    ack = RDTSegment(
-                        ackNum=seg.seqNum,
-                        flags=segment.FLAG_ACK
-                    )
-                    self.sock.sendto(ack.pack(), self.channelAddr)
-                    segment.traceSend(ack, self.buffer.base, self.buffer.next, self.buffer.freeSlots())
+                        segment.traceDrop(seg.seqNum,"window") # Trace duplicate
+                    # and send an ACK with ackNum = rcvBase - 1. If rcvBase still 0, send no ACK
+                    if rcvBase > 0:
+                        ack = RDTSegment(
+                            ackNum=segment.mask(rcvBase - 1),
+                            flags=segment.FLAG_ACK,
+                            rcvWin=self.buffer.freeSlots()
+                        )
+                        self.sock.sendto(ack.pack(), self.channelAddr)
+                        segment.traceSend(ack, self.buffer.base, self.buffer.next, self.buffer.freeSlots())
 
         self.sock.settimeout(0.005)
         self.thread = threading.Thread(target=network_thread)

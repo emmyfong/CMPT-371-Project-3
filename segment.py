@@ -164,7 +164,8 @@ def inWindow(x, base, n):
     space. Comparing sequence numbers with < instead gives the right answer
     only while the space is large enough never to wrap.
     """
-    raise NotImplementedError
+    return (x - base) % space() < n
+    # raise NotImplementedError
 
 
 def windowLimit(protocol):

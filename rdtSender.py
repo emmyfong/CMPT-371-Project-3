@@ -90,7 +90,7 @@ class Sender:
         def network_thread():
             while True:
                 try:
-                    data, addr = self.sock.recvfrom(4096)
+                    data, addr = self.sock.recvfrom(65535)
                 except socket.timeout:
                     data = None
                 except OSError:
@@ -106,22 +106,29 @@ class Sender:
                     else:
                         seg = RDTSegment.unpack(data)
 
-                        if seg.isAck: # if it's an ACK for outstanding segment, markACKed
-                            outstanding = self.buffer.get(self.buffer.base)
-                            if outstanding is not None and outstanding.seqNum == seg.ackNum:
-                                self.buffer.markAcked(self.buffer.base)
-                                # and clear deadline
+                        if seg.isAck:
+                            base, nxt = self.buffer.base, self.buffer.next
+                            # If n = ackNum is within [base, next), markAcked base through ackNum
+                            n = base + (seg.ackNum - base) % segment.space() # convert numAck to logical
+                            if segment.inWindow(n, base, nxt-base):
                                 with self.lock:
-                                    self.deadline = None
+                                    for i in range(base, n+1):
+                                        self.buffer.markAcked(i)
+
+                                    if self.buffer.outstanding(): # Restart timer when base advances and something still outstanding
+                                        self.deadline = time.monotonic() + config.RTO_INIT
+                                    else: # Stop timer if window empty
+                                        self.deadline = None
                 
                 with self.lock:
                     deadline = self.deadline
-                if deadline is not None and time.monotonic() >= deadline: # compare time.monotonic() against the deadlines
-                    outstanding = self.buffer.get(self.buffer.base)
-                    if outstanding is not None:
-                        segment.traceTimeout(outstanding.seqNum, self.buffer.base, self.buffer.next)
-                        self.sock.sendto(outstanding.pack(), self.channelAddr) # retransmit
-                        segment.traceSend(outstanding, self.buffer.base, self.buffer.next, config.WINDOW)
+                if deadline is not None and time.monotonic() >= deadline: # if time expired, retransmit [base, next)
+                    base, nxt = self.buffer.base, self.buffer.next
+                    if base < nxt:
+                        segment.traceTimeout(self.buffer.get(base).seqNum, base, nxt)
+                        for i in range(base, nxt):
+                            self.sock.sendto(self.buffer.get(i).pack(), self.channelAddr) # retransmit
+                            segment.traceSend(self.buffer.get(i), base, nxt, config.WINDOW)
                         with self.lock:
                             self.deadline = time.monotonic() + config.RTO_INIT
 
@@ -144,7 +151,7 @@ class Sender:
         """
 
         seg = RDTSegment(
-            seqNum=self.buffer.next % (2 ** config.SEQ_BITS),
+            seqNum=segment.mask(self.buffer.next),
             payload=payload
         )
 
@@ -156,7 +163,8 @@ class Sender:
         segment.traceSend(seg, self.buffer.base, self.buffer.next, config.WINDOW)
 
         with self.lock:
-            self.deadline = time.monotonic() + config.RTO_INIT
+            if self.deadline is None:
+                self.deadline = time.monotonic() + config.RTO_INIT
 
         return True
         
