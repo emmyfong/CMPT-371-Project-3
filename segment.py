@@ -355,7 +355,18 @@ class RdtBuffer:
         rdtReceiver.py. Placing a segment at the wrong index is therefore not a
         local mistake: it delivers the file in the wrong order.
         """
-        raise NotImplementedError
+        with self.cv:
+            if not (self.base <= index < self.base + self.size): # Return False if the index is outside [base, base + size)
+                return False
+            if self.slots[index % self.size] is not None: # Return False if that slot is already occupied
+                return False
+            
+            self.slots[index % self.size] = seg # Place segment
+
+            self.next = max(self.next, index + 1) # `next` has to end up one past the highest index placed
+            self.cv.notify_all()
+            return True
+        #raise NotImplementedError
 
     def markAcked(self, index):
         """Flag the segment at `index`, then slide base past a run of acked slots.
@@ -376,7 +387,23 @@ class RdtBuffer:
         which is why one call can free several slots and wake an application
         thread that has been blocked in putNext.
         """
-        raise NotImplementedError
+        with self.cv:
+            seg = self.slots[index % self.size]
+
+            if not (self.base <= index < self.next) or seg is None: # Return False if the index is not in [base, next) or the slot is empty.
+                return False
+            
+            seg.acked = True # Mark ACKed
+
+            while self.base < self.next: # slide base past a run of acked slots
+                current = self.slots[self.base % self.size]
+                if current is None or not current.acked:
+                    break
+                self.base += 1
+
+            self.cv.notify_all()
+            return True
+        # raise NotImplementedError
 
 
 # ============================================================================

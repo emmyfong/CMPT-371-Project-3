@@ -50,7 +50,13 @@ class Receiver:
         config.WINDOW until task 5 and segment.checkWindow(protocol) afterward.
         Go-Back-N never needs it: its receive window is one segment.
         """
-        raise NotImplementedError
+        self.sock = sock
+        self.channelAddr = channelAddr
+        self.protocol = protocol
+
+        self.buffer = RdtBuffer(config.RCV_BUF)
+        
+        #raise NotImplementedError
 
     def start(self):
         """Start the network thread.
@@ -68,7 +74,41 @@ class Receiver:
         flow control in task 3 exists to prevent. Keep the socket call and the
         delivery outside the buffer's Condition and it stays survivable.
         """
-        raise NotImplementedError
+        def network_thread():
+            while True:
+                try:
+                    data, addr = self.sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    print("Idle timeout.")
+                    break
+
+                invalid_reason = RDTSegment.validate(data)
+                if invalid_reason == "checksum":
+                    segment.traceCorrupt(int.from_bytes(data[0:4], "big"))
+                elif invalid_reason is not None:
+                    segment.traceDrop(int.from_bytes(data[0:4], "big"), invalid_reason)
+                else: # validated
+                    seg = RDTSegment.unpack(data)
+                    # if seqNum == firstEmpty, then place seg into buffer at seqNum
+                    expected = self.buffer.firstEmpty()
+                    if seg.seqNum == expected  % (2 ** config.SEQ_BITS):
+                        self.buffer.putSeqNum(seg, expected)
+                    else:
+                        segment.traceDrop(seg.seqNum,"") # Trace duplicate
+                    # and send ACK.
+                    ack = RDTSegment(
+                        ackNum=seg.seqNum,
+                        flags=segment.FLAG_ACK
+                    )
+                    self.sock.sendto(ack.pack(), self.channelAddr)
+                    segment.traceSend(ack, self.buffer.base, self.buffer.next, self.buffer.freeSlots())
+
+        self.sock.settimeout(0.005)
+        self.thread = threading.Thread(target=network_thread)
+        self.thread.start()
+        #raise NotImplementedError
 
     def receive(self):
         """Return one segment's payload, in order, blocking until there is one.
@@ -77,7 +117,14 @@ class Receiver:
         has been handed over. Each segment must be returned exactly once, ever,
         however many times it arrives.
         """
-        raise NotImplementedError
+        seg = self.buffer.getNext()
+        
+        if seg is None:
+            return None
+        
+        segment.traceDeliver(seg.seqNum, seg.length)
+        return seg.payload
+        #raise NotImplementedError
 
     def waitClosed(self):
         """Block until the connection has been taken down, and report whether
